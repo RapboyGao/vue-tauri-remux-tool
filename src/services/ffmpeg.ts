@@ -19,7 +19,12 @@ class FFmpegService {
 
   // 检查FFmpeg是否安装
   async checkInstallation(): Promise<boolean> {
-    return await fileExists(this.ffmpegPath);
+    const exists = await fileExists(this.ffmpegPath);
+    if (exists) {
+      // 如果文件存在，验证其完整性
+      return await this.verifyIntegrity();
+    }
+    return false;
   }
 
   // 获取FFmpeg版本信息
@@ -52,6 +57,10 @@ class FFmpegService {
       const result = await invoke<boolean>('update_ffmpeg', {
         ffmpegPath: this.ffmpegPath
       });
+      
+      // 重置缓存，确保下次获取信息时会重新检查
+      this.resetCache();
+      
       return result;
     } catch (error) {
       console.error('FFmpeg update failed:', error);
