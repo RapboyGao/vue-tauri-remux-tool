@@ -1,7 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use std::process::{Command, Stdio};
 use std::path::Path;
-use std::fs::{self, File};
+use std::fs;
 use std::io::{BufRead, BufReader};
 use std::sync::Mutex;
 use tauri::Emitter;
@@ -51,6 +51,13 @@ fn check_ffmpeg_version(ffmpeg_path: &str) -> Result<String, String> {
     Ok(version_line.to_string())
 }
 
+// 添加下载相关的导入
+use reqwest::blocking::get;
+use tempfile::tempdir;
+use zip::ZipArchive;
+use tar::Archive;
+use flate2::read::GzDecoder;
+
 #[tauri::command]
 fn update_ffmpeg(ffmpeg_path: &str) -> Result<bool, String> {
     println!("Updating FFmpeg to latest version...");
@@ -64,108 +71,134 @@ fn update_ffmpeg(ffmpeg_path: &str) -> Result<bool, String> {
             .map_err(|e| format!("Failed to create FFmpeg directory: {}", e))?;
     }
     
-    // 根据平台创建模拟的FFmpeg可执行文件
-    let is_windows = cfg!(target_os = "windows");
-    let is_macos = cfg!(target_os = "macos");
-    let is_linux = cfg!(target_os = "linux");
+    // 根据平台确定下载URL
+    let (download_url, is_zip, ffmpeg_binary_name) = {
+        if cfg!(target_os = "macos") {
+            // macOS: 使用evermeet.cx的构建版本
+            ("https://evermeet.cx/ffmpeg/ffmpeg-7.0.zip".to_string(), true, "ffmpeg")
+        } else if cfg!(target_os = "windows") {
+            // Windows: 使用BtbN的构建版本
+            ("https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip".to_string(), true, "ffmpeg.exe")
+        } else if cfg!(target_os = "linux") {
+            // Linux: 使用johnvansickle的构建版本
+            ("https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz".to_string(), false, "ffmpeg")
+        } else {
+            return Err("Unsupported platform for FFmpeg update".to_string());
+        }
+    };
     
-    if is_macos {
-        // 对于macOS，创建一个模拟的shell脚本
-        let script_content = r#"#!/bin/bash
-if [ "$1" = "-version" ]; then
-    echo "ffmpeg version 7.0 Copyright (c) 2000-2024 the FFmpeg developers"
-    echo "built with Apple clang version 15.0.0 (clang-1500.3.9.4)"
-    echo "configuration: --prefix=/usr/local/Cellar/ffmpeg/7.0 --enable-shared --enable-pthreads --enable-version3 --cc=clang --host-cflags= --host-ldflags= --enable-ffplay --enable-gnutls --enable-gpl --enable-libaom --enable-libbluray --enable-libdav1d --enable-libmp3lame --enable-libopus --enable-librav1e --enable-librist --enable-librubberband --enable-libsnappy --enable-libsrt --enable-libsvtav1 --enable-libtesseract --enable-libtheora --enable-libvidstab --enable-libvmaf --enable-libvorbis --enable-libvpx --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxml2 --enable-libxvid --enable-lzma --enable-libfontconfig --enable-libfreetype --enable-frei0r --enable-libass --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenjpeg --enable-libspeex --enable-libsoxr --enable-libzmq --enable-libzimg --disable-libjack --disable-indev=jack --enable-videotoolbox"
-    echo "libavutil      59.  8.100 / 59.  8.100"
-    echo "libavcodec     61.  3.100 / 61.  3.100"
-    echo "libavformat    61.  1.100 / 61.  1.100"
-    echo "libavdevice    61.  1.100 / 61.  1.100"
-    echo "libavfilter     10.  1.100 / 10.  1.100"
-    echo "libswscale      8.  1.100 /  8.  1.100"
-    echo "libswresample   5.  1.100 /  5.  1.100"
-    echo "libpostproc    58.  1.100 / 58.  1.100"
-    exit 0
-else
-    echo "This is a mock FFmpeg executable for development purposes." >&2
-    exit 1
-fi
-"#;
-        
-        fs::write(ffmpeg_path, script_content)
-            .map_err(|e| format!("Failed to write mock FFmpeg script: {}", e))?;
-        
-        // 设置文件为可执行
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(ffmpeg_path)
-            .map_err(|e| format!("Failed to get file metadata: {}", e))?.permissions();
-        perms.set_mode(0o755); // rwxr-xr-x
-        fs::set_permissions(ffmpeg_path, perms)
-            .map_err(|e| format!("Failed to set executable permissions: {}", e))?;
-        
-        println!("Created mock FFmpeg script for macOS at: {}", ffmpeg_path);
-    } else if is_windows {
-        // 对于Windows，创建一个简单的批处理文件
-        let batch_content = r#"@echo off
-if "%1" == "-version" (
-    echo ffmpeg version 7.0 Copyright (c) 2000-2024 the FFmpeg developers
-    echo built with gcc 13.2.0 (GCC)
-    echo configuration: --enable-gpl --enable-version3 --enable-sdl2 --enable-fontconfig --enable-gnutls --enable-iconv --enable-libass --enable-libbluray --enable-libdav1d --enable-libmp3lame --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenjpeg --enable-libopus --enable-libshine --enable-libsnappy --enable-libsoxr --enable-libtheora --enable-libtwolame --enable-libvpx --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxml2 --enable-libzimg --enable-lzma --enable-zlib --enable-gmp --enable-libvidstab --enable-libvmaf --enable-libvorbis --enable-libvo-amrwbenc --enable-libmysofa --enable-libspeex --enable-libxvid --enable-libaom --enable-libjxl --enable-libplacebo
-    echo libavutil      59.  8.100 / 59.  8.100
-    echo libavcodec     61.  3.100 / 61.  3.100
-    echo libavformat    61.  1.100 / 61.  1.100
-    echo libavdevice    61.  1.100 / 61.  1.100
-    echo libavfilter     10.  1.100 / 10.  1.100
-    echo libswscale      8.  1.100 /  8.  1.100
-    echo libswresample   5.  1.100 /  5.  1.100
-    echo libpostproc    58.  1.100 / 58.  1.100
-    exit /b 0
-) else (
-    echo This is a mock FFmpeg executable for development purposes.
-    exit /b 1
-)
-"#;
-        
-        fs::write(ffmpeg_path, batch_content)
-            .map_err(|e| format!("Failed to write mock FFmpeg batch file: {}", e))?;
-        
-        println!("Created mock FFmpeg batch file for Windows at: {}", ffmpeg_path);
-    } else if is_linux {
-        // 对于Linux，创建一个模拟的shell脚本
-        let script_content = r#"#!/bin/bash
-if [ "$1" = "-version" ]; then
-    echo "ffmpeg version 7.0 Copyright (c) 2000-2024 the FFmpeg developers"
-    echo "built with gcc 13.2.0 (Ubuntu 13.2.0-4ubuntu3)"
-    echo "configuration: --enable-gpl --enable-version3 --enable-static --disable-debug --disable-ffplay --disable-indev=sndio --disable-outdev=sndio --cc=gcc --enable-fontconfig --enable-frei0r --enable-gnutls --enable-gmp --enable-libgme --enable-gray --enable-libaom --enable-libfribidi --enable-libass --enable-libvmaf --enable-libfreetype --enable-libmp3lame --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenjpeg --enable-librubberband --enable-libsoxr --enable-libspeex --enable-libsrt --enable-libvorbis --enable-libopus --enable-libtheora --enable-libvidstab --enable-libvpx --enable-libwebp --enable-libx265 --enable-libxvid --enable-libx264 --enable-libzvbi --enable-libzimg"
-    echo "libavutil      59.  8.100 / 59.  8.100"
-    echo "libavcodec     61.  3.100 / 61.  3.100"
-    echo "libavformat    61.  1.100 / 61.  1.100"
-    echo "libavdevice    61.  1.100 / 61.  1.100"
-    echo "libavfilter     10.  1.100 / 10.  1.100"
-    echo "libswscale      8.  1.100 /  8.  1.100"
-    echo "libswresample   5.  1.100 /  5.  1.100"
-    echo "libpostproc    58.  1.100 / 58.  1.100"
-    exit 0
-else
-    echo "This is a mock FFmpeg executable for development purposes." >&2
-    exit 1
-fi
-"#;
-        
-        fs::write(ffmpeg_path, script_content)
-            .map_err(|e| format!("Failed to write mock FFmpeg script: {}", e))?;
-        
-        // 设置文件为可执行
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(ffmpeg_path)
-            .map_err(|e| format!("Failed to get file metadata: {}", e))?.permissions();
-        perms.set_mode(0o755); // rwxr-xr-x
-        fs::set_permissions(ffmpeg_path, perms)
-            .map_err(|e| format!("Failed to set executable permissions: {}", e))?;
-        
-        println!("Created mock FFmpeg script for Linux at: {}", ffmpeg_path);
-    } else {
-        return Err("Unsupported platform for FFmpeg update".to_string());
+    println!("Downloading FFmpeg from: {}", download_url);
+    
+    // 下载FFmpeg压缩包
+    let response = get(&download_url)
+        .map_err(|e| format!("Failed to download FFmpeg: {}", e))?;
+    
+    println!("Download completed, status: {}", response.status());
+    
+    if !response.status().is_success() {
+        return Err(format!("Failed to download FFmpeg: HTTP {}", response.status()));
     }
+    
+    // 创建临时目录
+    let temp_dir = tempdir()
+        .map_err(|e| format!("Failed to create temp directory: {}", e))?;
+    
+    // 保存下载的文件
+    let temp_file_path = temp_dir.path().join("ffmpeg.zip");
+    // 确保目录存在，fs::write会自动创建文件
+    
+    // 读取响应体
+    let mut content = Vec::new();
+    response.bytes()
+        .map(|bytes| content.extend_from_slice(&bytes))
+        .map_err(|e| format!("Failed to read response: {}", e))?;
+    
+    fs::write(&temp_file_path, content)
+        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+    
+    println!("Downloaded FFmpeg to temp file: {:?}", temp_file_path);
+    
+    // 解压文件
+    let extracted_dir = temp_dir.path().join("extracted");
+    fs::create_dir_all(&extracted_dir)
+        .map_err(|e| format!("Failed to create extracted directory: {}", e))?;
+    
+    if is_zip {
+        // 处理ZIP文件
+        let zip_file = fs::File::open(&temp_file_path)
+            .map_err(|e| format!("Failed to open ZIP file: {}", e))?;
+        let mut archive = ZipArchive::new(zip_file)
+            .map_err(|e| format!("Failed to open ZIP archive: {}", e))?;
+        
+        archive.extract(&extracted_dir)
+            .map_err(|e| format!("Failed to extract ZIP archive: {}", e))?;
+    } else {
+        // 处理TAR.GZ或TAR.XZ文件
+        let tar_file = fs::File::open(&temp_file_path)
+            .map_err(|e| format!("Failed to open TAR file: {}", e))?;
+        
+        // 检测文件扩展名并选择合适的解码器
+        if temp_file_path.extension().and_then(|s| s.to_str()) == Some("xz") {
+            let decoder = xz2::read::XzDecoder::new(tar_file);
+            let mut archive = Archive::new(decoder);
+            archive.unpack(&extracted_dir)
+                .map_err(|e| format!("Failed to extract TAR.XZ archive: {}", e))?;
+        } else {
+            let decoder = GzDecoder::new(tar_file);
+            let mut archive = Archive::new(decoder);
+            archive.unpack(&extracted_dir)
+                .map_err(|e| format!("Failed to extract TAR.GZ archive: {}", e))?;
+        }
+    }
+    
+    println!("Extracted FFmpeg to: {:?}", extracted_dir);
+    
+    // 查找FFmpeg可执行文件
+    let mut found_ffmpeg_path = None;
+    for entry in fs::read_dir(&extracted_dir)
+        .map_err(|e| format!("Failed to read extracted directory: {}", e))? {
+        let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+        let path = entry.path();
+        
+        if path.is_dir() {
+            // 递归查找子目录
+            for sub_entry in fs::read_dir(&path)
+                .map_err(|e| format!("Failed to read subdirectory: {}", e))? {
+                let sub_entry = sub_entry.map_err(|e| format!("Failed to read subdirectory entry: {}", e))?;
+                let sub_path = sub_entry.path();
+                
+                if sub_path.is_file() && sub_path.file_name().and_then(|s| s.to_str()) == Some(ffmpeg_binary_name) {
+                    found_ffmpeg_path = Some(sub_path);
+                    break;
+                }
+            }
+        } else if path.is_file() && path.file_name().and_then(|s| s.to_str()) == Some(ffmpeg_binary_name) {
+            found_ffmpeg_path = Some(path);
+            break;
+        }
+    }
+    
+    let ffmpeg_binary_path = found_ffmpeg_path
+        .ok_or_else(|| format!("Failed to find FFmpeg binary '{}' in extracted files", ffmpeg_binary_name))?;
+    
+    println!("Found FFmpeg binary at: {:?}", ffmpeg_binary_path);
+    
+    // 复制FFmpeg可执行文件到目标路径
+    fs::copy(&ffmpeg_binary_path, ffmpeg_path)
+        .map_err(|e| format!("Failed to copy FFmpeg binary: {}", e))?;
+    
+    // 设置可执行权限（对于非Windows平台）
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(ffmpeg_path)
+            .map_err(|e| format!("Failed to get file metadata: {}", e))?.permissions();
+        perms.set_mode(0o755); // rwxr-xr-x
+        fs::set_permissions(ffmpeg_path, perms)
+            .map_err(|e| format!("Failed to set executable permissions: {}", e))?;
+    }
+    
+    println!("Successfully updated FFmpeg to: {}", ffmpeg_path);
     
     Ok(true)
 }
@@ -256,6 +289,7 @@ async fn run_ffmpeg(ffmpeg_path: &str, args: Vec<&str>, window: tauri::Window) -
     Ok(pid_i32)
 }
 
+#[allow(dead_code)]
 #[tauri::command]
 async fn get_ffmpeg_output(pid: i32) -> Result<String, String> {
     // 这里可以实现获取特定进程的输出
