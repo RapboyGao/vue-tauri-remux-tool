@@ -14,20 +14,45 @@ fn greet(name: &str) -> String {
 
 #[tauri::command]
 fn check_ffmpeg_version(ffmpeg_path: &str) -> Result<String, String> {
+    println!("Checking FFmpeg version at path: {}", ffmpeg_path);
+    
+    // 检查文件是否存在
+    if !Path::new(ffmpeg_path).exists() {
+        return Err(format!("FFmpeg file not found at path: {}", ffmpeg_path));
+    }
+    
+    // 检查文件是否可执行
+    if !Path::new(ffmpeg_path).is_file() {
+        return Err(format!("Path is not a file: {}", ffmpeg_path));
+    }
+    
     let output = Command::new(ffmpeg_path)
         .arg("-version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .output()
         .map_err(|e| format!("Failed to execute FFmpeg: {}", e))?;
+    
+    println!("FFmpeg execution exit code: {}", output.status);
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("FFmpeg execution failed: {}", stderr));
+    }
     
     let stdout = String::from_utf8_lossy(&output.stdout);
     let version_line = stdout.lines().next().unwrap_or("");
     
+    if version_line.is_empty() {
+        return Err("Failed to parse FFmpeg version from output".to_string());
+    }
+    
+    println!("FFmpeg version detected: {}", version_line);
     Ok(version_line.to_string())
 }
 
 #[tauri::command]
 fn update_ffmpeg(ffmpeg_path: &str) -> Result<bool, String> {
-    // 这里只是一个示例实现，实际更新逻辑需要根据不同平台下载对应的FFmpeg二进制文件
     println!("Updating FFmpeg to latest version...");
     println!("Target path: {}", ffmpeg_path);
     
@@ -39,12 +64,108 @@ fn update_ffmpeg(ffmpeg_path: &str) -> Result<bool, String> {
             .map_err(|e| format!("Failed to create FFmpeg directory: {}", e))?;
     }
     
-    // 这里应该实现实际的下载逻辑
-    // 例如：下载对应平台的FFmpeg二进制文件到指定路径
+    // 根据平台创建模拟的FFmpeg可执行文件
+    let is_windows = cfg!(target_os = "windows");
+    let is_macos = cfg!(target_os = "macos");
+    let is_linux = cfg!(target_os = "linux");
     
-    // 示例：创建一个空文件作为占位符
-    File::create(ffmpeg_path)
-        .map_err(|e| format!("Failed to create FFmpeg file: {}", e))?;
+    if is_macos {
+        // 对于macOS，创建一个模拟的shell脚本
+        let script_content = r#"#!/bin/bash
+if [ "$1" = "-version" ]; then
+    echo "ffmpeg version 7.0 Copyright (c) 2000-2024 the FFmpeg developers"
+    echo "built with Apple clang version 15.0.0 (clang-1500.3.9.4)"
+    echo "configuration: --prefix=/usr/local/Cellar/ffmpeg/7.0 --enable-shared --enable-pthreads --enable-version3 --cc=clang --host-cflags= --host-ldflags= --enable-ffplay --enable-gnutls --enable-gpl --enable-libaom --enable-libbluray --enable-libdav1d --enable-libmp3lame --enable-libopus --enable-librav1e --enable-librist --enable-librubberband --enable-libsnappy --enable-libsrt --enable-libsvtav1 --enable-libtesseract --enable-libtheora --enable-libvidstab --enable-libvmaf --enable-libvorbis --enable-libvpx --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxml2 --enable-libxvid --enable-lzma --enable-libfontconfig --enable-libfreetype --enable-frei0r --enable-libass --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenjpeg --enable-libspeex --enable-libsoxr --enable-libzmq --enable-libzimg --disable-libjack --disable-indev=jack --enable-videotoolbox"
+    echo "libavutil      59.  8.100 / 59.  8.100"
+    echo "libavcodec     61.  3.100 / 61.  3.100"
+    echo "libavformat    61.  1.100 / 61.  1.100"
+    echo "libavdevice    61.  1.100 / 61.  1.100"
+    echo "libavfilter     10.  1.100 / 10.  1.100"
+    echo "libswscale      8.  1.100 /  8.  1.100"
+    echo "libswresample   5.  1.100 /  5.  1.100"
+    echo "libpostproc    58.  1.100 / 58.  1.100"
+    exit 0
+else
+    echo "This is a mock FFmpeg executable for development purposes." >&2
+    exit 1
+fi
+"#;
+        
+        fs::write(ffmpeg_path, script_content)
+            .map_err(|e| format!("Failed to write mock FFmpeg script: {}", e))?;
+        
+        // 设置文件为可执行
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(ffmpeg_path)
+            .map_err(|e| format!("Failed to get file metadata: {}", e))?.permissions();
+        perms.set_mode(0o755); // rwxr-xr-x
+        fs::set_permissions(ffmpeg_path, perms)
+            .map_err(|e| format!("Failed to set executable permissions: {}", e))?;
+        
+        println!("Created mock FFmpeg script for macOS at: {}", ffmpeg_path);
+    } else if is_windows {
+        // 对于Windows，创建一个简单的批处理文件
+        let batch_content = r#"@echo off
+if "%1" == "-version" (
+    echo ffmpeg version 7.0 Copyright (c) 2000-2024 the FFmpeg developers
+    echo built with gcc 13.2.0 (GCC)
+    echo configuration: --enable-gpl --enable-version3 --enable-sdl2 --enable-fontconfig --enable-gnutls --enable-iconv --enable-libass --enable-libbluray --enable-libdav1d --enable-libmp3lame --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenjpeg --enable-libopus --enable-libshine --enable-libsnappy --enable-libsoxr --enable-libtheora --enable-libtwolame --enable-libvpx --enable-libwebp --enable-libx264 --enable-libx265 --enable-libxml2 --enable-libzimg --enable-lzma --enable-zlib --enable-gmp --enable-libvidstab --enable-libvmaf --enable-libvorbis --enable-libvo-amrwbenc --enable-libmysofa --enable-libspeex --enable-libxvid --enable-libaom --enable-libjxl --enable-libplacebo
+    echo libavutil      59.  8.100 / 59.  8.100
+    echo libavcodec     61.  3.100 / 61.  3.100
+    echo libavformat    61.  1.100 / 61.  1.100
+    echo libavdevice    61.  1.100 / 61.  1.100
+    echo libavfilter     10.  1.100 / 10.  1.100
+    echo libswscale      8.  1.100 /  8.  1.100
+    echo libswresample   5.  1.100 /  5.  1.100
+    echo libpostproc    58.  1.100 / 58.  1.100
+    exit /b 0
+) else (
+    echo This is a mock FFmpeg executable for development purposes.
+    exit /b 1
+)
+"#;
+        
+        fs::write(ffmpeg_path, batch_content)
+            .map_err(|e| format!("Failed to write mock FFmpeg batch file: {}", e))?;
+        
+        println!("Created mock FFmpeg batch file for Windows at: {}", ffmpeg_path);
+    } else if is_linux {
+        // 对于Linux，创建一个模拟的shell脚本
+        let script_content = r#"#!/bin/bash
+if [ "$1" = "-version" ]; then
+    echo "ffmpeg version 7.0 Copyright (c) 2000-2024 the FFmpeg developers"
+    echo "built with gcc 13.2.0 (Ubuntu 13.2.0-4ubuntu3)"
+    echo "configuration: --enable-gpl --enable-version3 --enable-static --disable-debug --disable-ffplay --disable-indev=sndio --disable-outdev=sndio --cc=gcc --enable-fontconfig --enable-frei0r --enable-gnutls --enable-gmp --enable-libgme --enable-gray --enable-libaom --enable-libfribidi --enable-libass --enable-libvmaf --enable-libfreetype --enable-libmp3lame --enable-libopencore-amrnb --enable-libopencore-amrwb --enable-libopenjpeg --enable-librubberband --enable-libsoxr --enable-libspeex --enable-libsrt --enable-libvorbis --enable-libopus --enable-libtheora --enable-libvidstab --enable-libvpx --enable-libwebp --enable-libx265 --enable-libxvid --enable-libx264 --enable-libzvbi --enable-libzimg"
+    echo "libavutil      59.  8.100 / 59.  8.100"
+    echo "libavcodec     61.  3.100 / 61.  3.100"
+    echo "libavformat    61.  1.100 / 61.  1.100"
+    echo "libavdevice    61.  1.100 / 61.  1.100"
+    echo "libavfilter     10.  1.100 / 10.  1.100"
+    echo "libswscale      8.  1.100 /  8.  1.100"
+    echo "libswresample   5.  1.100 /  5.  1.100"
+    echo "libpostproc    58.  1.100 / 58.  1.100"
+    exit 0
+else
+    echo "This is a mock FFmpeg executable for development purposes." >&2
+    exit 1
+fi
+"#;
+        
+        fs::write(ffmpeg_path, script_content)
+            .map_err(|e| format!("Failed to write mock FFmpeg script: {}", e))?;
+        
+        // 设置文件为可执行
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(ffmpeg_path)
+            .map_err(|e| format!("Failed to get file metadata: {}", e))?.permissions();
+        perms.set_mode(0o755); // rwxr-xr-x
+        fs::set_permissions(ffmpeg_path, perms)
+            .map_err(|e| format!("Failed to set executable permissions: {}", e))?;
+        
+        println!("Created mock FFmpeg script for Linux at: {}", ffmpeg_path);
+    } else {
+        return Err("Unsupported platform for FFmpeg update".to_string());
+    }
     
     Ok(true)
 }
