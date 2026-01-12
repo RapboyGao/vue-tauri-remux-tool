@@ -28,6 +28,6 @@ tempfile = "3"
 zip = "0.6"
 tar = "0.4"
 flate2 = "1.0"
-sha2 = "0.10"
 xz2 = "0.1"
+scraper = "0.18"
 

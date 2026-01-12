@@ -53,10 +53,6 @@ fn check_ffmpeg_version(ffmpeg_path: &str) -> Result<String, String> {
 
 // 添加下载相关的导入
 use reqwest::blocking::get;
-use tempfile::tempdir;
-use zip::ZipArchive;
-use tar::Archive;
-use flate2::read::GzDecoder;
 
 #[tauri::command]
 fn update_ffmpeg(ffmpeg_path: &str) -> Result<bool, String> {
@@ -71,25 +67,34 @@ fn update_ffmpeg(ffmpeg_path: &str) -> Result<bool, String> {
             .map_err(|e| format!("Failed to create FFmpeg directory: {}", e))?;
     }
     
-    // 根据平台确定下载URL
-    let (download_url, is_zip, ffmpeg_binary_name) = {
-        if cfg!(target_os = "macos") {
-            // macOS: 使用evermeet.cx的构建版本
-            ("https://evermeet.cx/ffmpeg/ffmpeg-7.0.zip".to_string(), true, "ffmpeg")
-        } else if cfg!(target_os = "windows") {
-            // Windows: 使用BtbN的构建版本
-            ("https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip".to_string(), true, "ffmpeg.exe")
-        } else if cfg!(target_os = "linux") {
-            // Linux: 使用johnvansickle的构建版本
-            ("https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz".to_string(), false, "ffmpeg")
+    // 确定平台和架构（使用npmmirror.com的命名约定）
+    let (platform, arch) = {
+        let arch = if cfg!(target_arch = "x86_64") {
+            "x64"
+        } else if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else if cfg!(target_arch = "x86") {
+            "ia32"
         } else {
-            return Err("Unsupported platform for FFmpeg update".to_string());
+            return Err(format!("Unsupported architecture: {}", std::env::consts::ARCH));
+        };
+        
+        if cfg!(target_os = "macos") {
+            ("darwin", arch)
+        } else if cfg!(target_os = "windows") {
+            ("win32", arch)
+        } else if cfg!(target_os = "linux") {
+            ("linux", arch)
+        } else {
+            return Err(format!("Unsupported platform: {}", std::env::consts::OS));
         }
     };
     
+    // 构建npmmirror.com的下载URL
+    let download_url = format!("https://registry.npmmirror.com/-/binary/ffmpeg-static/b6.1.1/ffmpeg-{}-{}", platform, arch);
     println!("Downloading FFmpeg from: {}", download_url);
     
-    // 下载FFmpeg压缩包
+    // 下载FFmpeg可执行文件
     let response = get(&download_url)
         .map_err(|e| format!("Failed to download FFmpeg: {}", e))?;
     
@@ -99,93 +104,13 @@ fn update_ffmpeg(ffmpeg_path: &str) -> Result<bool, String> {
         return Err(format!("Failed to download FFmpeg: HTTP {}", response.status()));
     }
     
-    // 创建临时目录
-    let temp_dir = tempdir()
-        .map_err(|e| format!("Failed to create temp directory: {}", e))?;
-    
-    // 保存下载的文件
-    let temp_file_path = temp_dir.path().join("ffmpeg.zip");
-    // 确保目录存在，fs::write会自动创建文件
-    
     // 读取响应体
-    let mut content = Vec::new();
-    response.bytes()
-        .map(|bytes| content.extend_from_slice(&bytes))
+    let content = response.bytes()
         .map_err(|e| format!("Failed to read response: {}", e))?;
     
-    fs::write(&temp_file_path, content)
-        .map_err(|e| format!("Failed to write temp file: {}", e))?;
-    
-    println!("Downloaded FFmpeg to temp file: {:?}", temp_file_path);
-    
-    // 解压文件
-    let extracted_dir = temp_dir.path().join("extracted");
-    fs::create_dir_all(&extracted_dir)
-        .map_err(|e| format!("Failed to create extracted directory: {}", e))?;
-    
-    if is_zip {
-        // 处理ZIP文件
-        let zip_file = fs::File::open(&temp_file_path)
-            .map_err(|e| format!("Failed to open ZIP file: {}", e))?;
-        let mut archive = ZipArchive::new(zip_file)
-            .map_err(|e| format!("Failed to open ZIP archive: {}", e))?;
-        
-        archive.extract(&extracted_dir)
-            .map_err(|e| format!("Failed to extract ZIP archive: {}", e))?;
-    } else {
-        // 处理TAR.GZ或TAR.XZ文件
-        let tar_file = fs::File::open(&temp_file_path)
-            .map_err(|e| format!("Failed to open TAR file: {}", e))?;
-        
-        // 检测文件扩展名并选择合适的解码器
-        if temp_file_path.extension().and_then(|s| s.to_str()) == Some("xz") {
-            let decoder = xz2::read::XzDecoder::new(tar_file);
-            let mut archive = Archive::new(decoder);
-            archive.unpack(&extracted_dir)
-                .map_err(|e| format!("Failed to extract TAR.XZ archive: {}", e))?;
-        } else {
-            let decoder = GzDecoder::new(tar_file);
-            let mut archive = Archive::new(decoder);
-            archive.unpack(&extracted_dir)
-                .map_err(|e| format!("Failed to extract TAR.GZ archive: {}", e))?;
-        }
-    }
-    
-    println!("Extracted FFmpeg to: {:?}", extracted_dir);
-    
-    // 查找FFmpeg可执行文件
-    let mut found_ffmpeg_path = None;
-    for entry in fs::read_dir(&extracted_dir)
-        .map_err(|e| format!("Failed to read extracted directory: {}", e))? {
-        let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
-        let path = entry.path();
-        
-        if path.is_dir() {
-            // 递归查找子目录
-            for sub_entry in fs::read_dir(&path)
-                .map_err(|e| format!("Failed to read subdirectory: {}", e))? {
-                let sub_entry = sub_entry.map_err(|e| format!("Failed to read subdirectory entry: {}", e))?;
-                let sub_path = sub_entry.path();
-                
-                if sub_path.is_file() && sub_path.file_name().and_then(|s| s.to_str()) == Some(ffmpeg_binary_name) {
-                    found_ffmpeg_path = Some(sub_path);
-                    break;
-                }
-            }
-        } else if path.is_file() && path.file_name().and_then(|s| s.to_str()) == Some(ffmpeg_binary_name) {
-            found_ffmpeg_path = Some(path);
-            break;
-        }
-    }
-    
-    let ffmpeg_binary_path = found_ffmpeg_path
-        .ok_or_else(|| format!("Failed to find FFmpeg binary '{}' in extracted files", ffmpeg_binary_name))?;
-    
-    println!("Found FFmpeg binary at: {:?}", ffmpeg_binary_path);
-    
-    // 复制FFmpeg可执行文件到目标路径
-    fs::copy(&ffmpeg_binary_path, ffmpeg_path)
-        .map_err(|e| format!("Failed to copy FFmpeg binary: {}", e))?;
+    // 将下载的内容直接写入目标文件
+    fs::write(ffmpeg_path, content)
+        .map_err(|e| format!("Failed to write FFmpeg executable: {}", e))?;
     
     // 设置可执行权限（对于非Windows平台）
     #[cfg(not(target_os = "windows"))]
