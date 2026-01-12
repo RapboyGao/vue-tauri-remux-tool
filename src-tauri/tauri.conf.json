@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.albert.vue-tauri-format-factory",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "vite",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
@@ -14,7 +14,13 @@
       {
         "title": "vue-tauri-format-factory",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "visible": true,
+        "resizable": true,
+        "minimizable": true,
+        "maximizable": true,
+        "closable": true,
+        "fullscreen": false
       }
     ],
     "security": {
